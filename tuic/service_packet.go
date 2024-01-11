@@ -2,6 +2,8 @@ package tuic
 
 import (
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/auth"
+	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -13,7 +15,7 @@ func (s *serverSession[U]) loopMessages() {
 	case <-s.authDone:
 	}
 	for {
-		message, err := s.quicConn.ReceiveMessage(s.ctx)
+		message, err := s.quicConn.ReceiveDatagram(s.ctx)
 		if err != nil {
 			s.closeWithError(E.Cause(err, "receive message"))
 			return
@@ -55,7 +57,7 @@ func (s *serverSession[U]) handleUDPMessage(message *udpMessage, udpStream bool)
 	udpConn, loaded := s.udpConnMap[message.sessionID]
 	s.udpAccess.RUnlock()
 	if !loaded || common.Done(udpConn.ctx) {
-		udpConn = newUDPPacketConn(s.ctx, s.quicConn, udpStream, true, func() {
+		udpConn = newUDPPacketConn(auth.ContextWithUser(s.ctx, s.authUser), s.quicConn, udpStream, true, func() {
 			s.udpAccess.Lock()
 			delete(s.udpConnMap, message.sessionID)
 			s.udpAccess.Unlock()
@@ -64,7 +66,8 @@ func (s *serverSession[U]) handleUDPMessage(message *udpMessage, udpStream bool)
 		s.udpAccess.Lock()
 		s.udpConnMap[message.sessionID] = udpConn
 		s.udpAccess.Unlock()
-		go s.handler.NewPacketConnection(udpConn.ctx, udpConn, M.Metadata{
+		newCtx, newConn := canceler.NewPacketConn(udpConn.ctx, udpConn, s.udpTimeout)
+		go s.handler.NewPacketConnection(newCtx, newConn, M.Metadata{
 			Source:      s.source,
 			Destination: message.destination,
 		})
